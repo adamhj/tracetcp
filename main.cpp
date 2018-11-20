@@ -47,6 +47,7 @@ const char optionCharNoAntiFlood = 'F';
 const char optionCharUseLocalIF  = 'i';
 const char optionCharForceGW     = 'g';
 const char optionCharUseRawSock  = 'R';
+const char optionCharUseUDP  = 'u';
 
 void displayVersion ()
 {
@@ -97,6 +98,7 @@ bool populateSettings(neo::CommandOptionParser& cp, TCPTraceSettings& settings)
             settings.remoteHost = cp.getOption(neo::CommandOption::UNNAMED).getParam(0);
 
 		settings.useRawSockets  = cp.getOption(optionCharUseRawSock).isPresent();
+		settings.useUDP  = cp.getOption(optionCharUseUDP).isPresent();
 		settings.forceGW        = cp.getOption(optionCharForceGW).getParam(0, "");
 		//settings.forceInterface = cp.getOption(optionCharUseLocalIF).getParam(0, "");
 
@@ -153,6 +155,7 @@ void setupCommandOptions (neo::CommandOptionParser& cp)
     //cp.addOption(neo::CommandOption (optionCharUseLocalIF, 1, 1, "address    Send from the specified local interface."));
     cp.addOption(neo::CommandOption (optionCharForceGW,    1, 1, "address    Send to remote host using specified gateway."));
     cp.addOption(neo::CommandOption (optionCharUseRawSock, 0, 0, "           Use Raw Sockets to send packets."));
+	cp.addOption(neo::CommandOption (optionCharUseUDP,     0, 0, "           Do UDP traceroute, instead of TCP."));
 }
 
 TraceTerminator g_traceTerminator;

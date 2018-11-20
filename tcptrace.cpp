@@ -39,11 +39,12 @@ enum ResponsePacketTypes
     ICMP_SOURCE_QU,
 	ICMP_REDIRECT,
     TCP_RST,
-    TCP_SYNACK
+    TCP_SYNACK,
+	UDP_RESP
 };
 
 // Compares what we sent to what we recieved back an determines if the packet is in reply to what we sent
-ResponsePacketTypes validateResponse(TCPIPHeader& sent, neo::MemoryBlock& resp)
+ResponsePacketTypes validateResponseTCP(TCPIPHeader &sent, neo::MemoryBlock& resp)
 {
     IPHeader* responseIP = (IPHeader*)(resp.getBlock());
     if (responseIP->protocol == IPPROTO_ICMP)
@@ -104,6 +105,66 @@ ResponsePacketTypes validateResponse(TCPIPHeader& sent, neo::MemoryBlock& resp)
 
     return NOT_VALID;
 }
+
+// Compares what we sent to what we recieved back an determines if the packet is in reply to what we sent
+ResponsePacketTypes validateResponseUDP(UDPIPPacket &sent, neo::MemoryBlock& resp)
+{
+    IPHeader* responseIP = (IPHeader*)(resp.getBlock());
+    if (responseIP->protocol == IPPROTO_ICMP)
+    {
+        // the response is ICMP - so find out the type of the response
+        ICMPHeader* icmpheader = (ICMPHeader*)(resp.getBlock() + responseIP->getHeaderSize());
+
+        switch (icmpheader->type)
+        {
+            case ICMPHeader::DEST_UNREACH:
+            case ICMPHeader::TTL_EXPIRED:
+            case ICMPHeader::SOURCE_QUENCH:
+			case ICMPHeader::REDIRECT:
+            {
+                ICMPErrorHeader* errorRep = (ICMPErrorHeader*)icmpheader;
+                IPHeaderWithSequece* returnedIP = (IPHeaderWithSequece *)&(errorRep->ipHeader);
+                // recover the the fist 64 bits of the original packet.
+                UDPHeader* returnedUDP = (UDPHeader*)(resp.getBlock() + responseIP->getHeaderSize() + errorRep->getHeaderSize());
+
+                // only src port, dest port & seq num will be present in the returned packet.            
+
+                if (sent.ip.id == returnedIP->id &&
+                    sent.ip.destIP == returnedIP->destIP &&
+                    sent.udp.destPort == returnedUDP->destPort &&
+					sent.ip.option_type == returnedIP->option_type &&
+					sent.ip.option_data == returnedIP->option_data)
+                {
+                    // the error contained the packet we sent
+                    switch (icmpheader->type)
+                    {
+                        case ICMPHeader::DEST_UNREACH:  return ICMP_NO_ROUTE;
+                        case ICMPHeader::TTL_EXPIRED:   return ICMP_TTL_EXP;
+                        case ICMPHeader::SOURCE_QUENCH: return ICMP_SOURCE_QU;
+						case ICMPHeader::REDIRECT:	    return ICMP_REDIRECT;
+                    }
+                }
+            }
+            break;
+        }
+    }
+    else if (responseIP->protocol == IPPROTO_UDP)
+    {   
+        // the response is UDP - is it a response to what we sent.
+        UDPHeader* responseUDP = (UDPHeader*)(resp.getBlock() + responseIP->getHeaderSize());
+
+        if (sent.ip.destIP      == responseIP->sourceIP &&
+            sent.ip.sourceIP    == responseIP->destIP &&
+            sent.udp.destPort   == responseUDP->sourcePort &&
+            sent.udp.sourcePort == responseUDP->destPort)
+        {
+			return UDP_RESP;
+        }
+    }
+
+    return NOT_VALID;
+}
+
 
 u_short ip_cksum(u_short *addr, int len);
 
@@ -168,15 +229,55 @@ void createTCPPacket (TCPIPHeader& h, const net::InetAddress& target, const net:
     h.ip.headerChecksum = in_cksum((u_short*)&h.ip, sizeof(h.ip)); 
 }
 
-
-ResponsePacketTypes doTCPPing (neo::RefPtr<IRawPacketInterface> rawInterface, const net::InetAddress& target, const net::InetAddress& source, int ttl, net::InetAddress& respFrom, DWORD& pingTime, DWORD timeout)
+void createUDPPacket (UDPIPPacket& h, const net::InetAddress& target, const net::InetAddress& source, int ttl)
 {
-    TCPIPHeader h;
-    createTCPPacket (h, target, source, ttl);
+    // create the ip& udp header to send
+  
+    h.ip.clear();
+	h.udp.clear();
 
-    neo::TimeOut timeOutCounter (timeout); 
+    h.udp.destPort = target.getPortNumber();
+    h.udp.sourcePort = rand() + 0x2000;
+	h.udp.length = 16;
+	h.udp.checksum = 0;
+	h.udp_body = 0;
+    h.udp.checksum = in_cksum((u_short*)&h.udp, sizeof(h.udp));
 
-    rawInterface->sendPacket ((const char*)&h, sizeof(h));
+	h.ip.option_type = 0x8804;
+	h.ip.option_data = rand();
+	
+    h.ip.length = 6;    // add ip_option length
+    h.ip.destIP = target.getIPAddress();
+    h.ip.sourceIP = source.getIPAddress();
+    h.ip.protocol = IPPROTO_UDP;
+    h.ip.version = 4;
+    h.ip.dontFrag = 1;
+    h.ip.moreFrags = 0;
+    h.ip.id = (u_short)GetCurrentProcessId();
+    h.ip.TTL = ttl;
+    h.ip.totLength = sizeof (h);
+    h.ip.headerChecksum = 0;
+    h.ip.headerChecksum = in_cksum((u_short*)&h.ip, sizeof(h.ip)); 
+
+}
+
+
+ResponsePacketTypes doTCPPing (neo::RefPtr<IRawPacketInterface> rawInterface, bool useUDP, const net::InetAddress& target, const net::InetAddress& source, int ttl, net::InetAddress& respFrom, DWORD& pingTime, DWORD timeout)
+{
+    TCPIPHeader tcpipHeader;
+	UDPIPPacket udpipPacket;
+
+	neo::TimeOut timeOutCounter (timeout);
+
+	if (useUDP) {
+		createUDPPacket (udpipPacket, target, source, ttl);
+		rawInterface->sendPacket ((const char*)&udpipPacket, sizeof(udpipPacket));
+	}
+	else {
+		createTCPPacket (tcpipHeader, target, source, ttl);
+	    rawInterface->sendPacket ((const char*)&tcpipHeader, sizeof(tcpipHeader));
+	}
+
 
     // get respose
     neo::MemoryBlock recBuffer(0x10000);
@@ -186,7 +287,11 @@ ResponsePacketTypes doTCPPing (neo::RefPtr<IRawPacketInterface> rawInterface, co
     {
         if (rawInterface->recPacket (recBuffer, respFrom, timeOutCounter.getRemainingTime()))
         {
-            respType = validateResponse (h, recBuffer);
+			if (useUDP) {
+				respType = validateResponseUDP (udpipPacket, recBuffer);
+			} else {
+				respType = validateResponseTCP (tcpipHeader, recBuffer);
+			}
         }
     }
     while ((NOT_VALID == respType) && !timeOutCounter.hasTimedOut());
@@ -204,8 +309,12 @@ void doTraceTCP (TCPTraceSettings& settings, ITraceOutput& out, TraceTerminator&
 
     net::InetAddress target (settings.remoteHost.c_str());
     
-    if (target.getPortNumber() == 0)
-        target.setPortNumber(80);
+    if (target.getPortNumber() == 0) {
+		if (settings.useUDP)
+			target.setPortNumber(53);
+		else
+			target.setPortNumber(80);
+	}
 
     if (!settings.portRange)
     {
@@ -244,12 +353,12 @@ void doTraceTCP (TCPTraceSettings& settings, ITraceOutput& out, TraceTerminator&
 
 				DWORD pingTime;
 				net::InetAddress resp;
-				ResponsePacketTypes respType = doTCPPing(rawInterface, target, rawInterface->getSourceAddress(), hop, resp, pingTime, settings.maxTimeout);
+				ResponsePacketTypes respType = doTCPPing(rawInterface, settings.useUDP, target, rawInterface->getSourceAddress(), hop, resp, pingTime, settings.maxTimeout);
 
 				if (respType == TCP_RST) {
 					// destination reached but port is closed, this maybe due to some hosts not allowing connections with ttl = 0. 
 					// resend ping with large ttl to see if its really closed. 
-					respType = doTCPPing(rawInterface, target, rawInterface->getSourceAddress(), 127, resp, pingTime, settings.maxTimeout);
+					respType = doTCPPing(rawInterface, settings.useUDP, target, rawInterface->getSourceAddress(), 127, resp, pingTime, settings.maxTimeout);
 				}
 				
                 if (respType == NOT_VALID)
@@ -274,7 +383,7 @@ void doTraceTCP (TCPTraceSettings& settings, ITraceOutput& out, TraceTerminator&
                     traceComplete = true;
                     hopComplete = true;
                 }
-                else if (respType == TCP_SYNACK)
+                else if (respType == TCP_SYNACK || respType == UDP_RESP)
                 {
                     out.destinationReached (resp, pingTime, true);
                     traceComplete = true;

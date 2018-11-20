@@ -259,7 +259,7 @@ namespace packet
     };
 
 
-    // header with ip & tcp headers in it
+	// header with ip & tcp headers in it
     struct TCPIPHeader 
     {
         IPHeader ip;
@@ -272,13 +272,41 @@ namespace packet
         }
     };
 
-
     struct UDPHeader
     {
         n_int<u_short> sourcePort;
         n_int<u_short> destPort;
         n_int<u_short> length;
         n_int<u_short> checksum;
+
+        void clear ()
+        {
+            clear_struct (*this);
+        }
+    };
+
+	struct IPHeaderWithSequece : public IPHeader
+	{
+		n_int<u_short> option_type;
+		n_int<u_short> option_data;
+
+        void clear ()
+        {
+            clear_struct (*this);
+        }
+	};
+
+	// header with ip & udp headers in it
+    struct UDPIPPacket 
+    {
+        IPHeaderWithSequece ip;
+        UDPHeader udp;
+		u_int64 udp_body;
+
+        void clear ()
+        {
+            clear_struct (*this);
+        }
     };
 
 

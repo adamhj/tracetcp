@@ -42,6 +42,7 @@ struct TCPTraceSettings
 	bool useRawSockets;
 	std::string forceGW;
 	std::string forceInterface;
+	bool useUDP;
 };
 
 class TraceTerminator
